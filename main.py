@@ -1,81 +1,45 @@
-
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List, Optional
-import os
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import httpx
-import re
+import os
 
-app = FastAPI(title="Agent Seatbelt - AI Agent Firewall", version="1.0.0")
+app = FastAPI(title="Agent Seatbelt - OpenRouter Edition")
 
-# === FIREWALL RULES ===
-BLOCKED_PATTERNS = [
-    "ignore previous instructions",
-    "ignore all previous",
-    "disregard previous",
-    "ignore your instructions",
-    "delete all",
-    "drop all tables",
-    "send all data",
-    "exfiltrate data",
-    "reveal system prompt",
-    "show system instructions",
-    "bypass safety",
-    "dan mode",
-    "jailbreak"
-]
-
-class Message(BaseModel):
-    role: str
-    content: str
-
-class ChatRequest(BaseModel):
-    model: str = "gpt-4o"
-    messages: List[Message]
-    temperature: Optional[float] = 0.7
+BLOCKED = ["ignore previous instructions", "ignore all previous", "delete all", "send all data", "reveal system prompt", "drop all tables", "bypass safety", "dan mode", "jailbreak", "exfiltrate"]
 
 @app.get("/")
 def health():
-    return {
-        "status": "Agent Seatbelt is running - We Got Your Back",
-        "firewall": "active",
-        "blocked_patterns": len(BLOCKED_PATTERNS),
-        "docs": "/docs"
-    }
+    return {"status": "live", "firewall": "OpenRouter + OpenAI compatible", "we_got_your_back": True, "docs": "/docs"}
 
 @app.post("/v1/chat/completions")
-async def firewall_proxy(req: ChatRequest):
-    full_text = " ".join([m.content for m in req.messages]).lower()
+async def firewall(request: Request):
+    body = await request.json()
+    text = " ".join([m.get("content","") for m in body.get("messages",[])]).lower()
     
-    # Check for attacks
-    for pattern in BLOCKED_PATTERNS:
-        if pattern in full_text:
-            return {
+    for b in BLOCKED:
+        if b in text:
+            return JSONResponse(content={
                 "blocked": True,
-                "reason": f"Blocked by Agent Seatbelt: Potential prompt injection detected",
-                "attack_detected": pattern,
-                "message": "We have your back - this attack was stopped before reaching your AI agent.",
-                "status": "protected"
-            }
+                "reason": f"Blocked by Agent Seatbelt: {b}",
+                "attack": b,
+                "we_got_your_back": "Stopped before reaching your model"
+            })
+
+    # Get customer's key from their request
+    auth = request.headers.get("authorization")
+    if not auth:
+        return JSONResponse(content={"error": "Add Authorization: Bearer sk-or-v1-... or sk-proj-..."}, status_code=401)
+
+    # Auto-detect if it's OpenRouter or OpenAI key
+    is_openrouter = "sk-or-" in auth
+    forward_url = "https://openrouter.ai/api/v1/chat/completions" if is_openrouter else "https://api.openai.com/v1/chat/completions"
     
-    # If clean, forward to OpenAI (if key exists) or return mock success
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return {
-            "blocked": False,
-            "status": "clean - would forward to OpenAI (set OPENAI_API_KEY env var to enable forwarding)",
-            "model": req.model,
-            "message": "Your agent is protected. Add your OpenAI key in Render to enable full proxy."
-        }
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=req.model_dump(),
-                timeout=30.0
-            )
-            return resp.json()
-    except Exception as e:
-        return {"error": str(e), "note": "Firewall is active, but forwarding failed"}
+    # Forward using customer's key - you pay $0
+    headers = {"Authorization": auth, "Content-Type": "application/json"}
+    if is_openrouter:
+        headers["HTTP-Referer"] = "https://agent-seatbelt.com"
+        headers["X-Title"] = "Agent Seatbelt"
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(forward_url, headers=headers, json=body, timeout=60)
+        return JSONResponse(content=r.json(), status_code=r.status_code)
